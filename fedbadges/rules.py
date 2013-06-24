@@ -36,9 +36,17 @@ lambdas = set([
     "lambda",
 ])
 
+
+def _shortcircuited_all(generator):
+    for item in generator:
+        if not bool(item):
+            return False
+    return True
+
+
 operator_lookup = {
     "any": any,
-    "all": all,
+    "all": _shortcircuited_all,
 }
 
 fedmsg_config = fedmsg.config.load_config()
