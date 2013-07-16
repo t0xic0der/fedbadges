@@ -1,14 +1,12 @@
 Fedora Badges
 =============
 
-This repo contains the consumer and the command nessicary to hook the fedora
-trigger:
-  category:
-      any:
-            - bodhi
-                    - git
-
+This repo contains the consumer and the command nessicary to hook the
 badges stack (Tahrir, Tahrir-API, Tahrir-REST) into fedmsg.
+
+The *actual badge rules* that we act on in Fedora Infrastructure can be
+found `here <http://infrastructure.fedoraproject.org/infra/ansible/roles/badges-backend/files/badges/>`_
+in our ansible repository.
 
 Architecture
 ------------
@@ -53,7 +51,7 @@ a ``trigger``, and a set of ``criteria``) is defined on disk as a yaml file.
 
   That is usually correct -- but sometimes, a BadgeRule needs to specify
   that one particular user (not all related users) should be recipients of
-  the badge.  In this case, the BadgeRule may define a ``recipient_key``
+  the badge.  In this case, the BadgeRule may define a ``recipient``
   in dot-notation that instructs the ``Consumer`` how to extract the
   recipient's username from the received message.
 
@@ -174,13 +172,13 @@ Here's an example of a simple criteria definition::
     criteria:
       filter:
         topics:
-        - "{topic}"
+        - "%(topic)s"
       operation: count
       condition:
         greater than or equal to: 2
 
 The above criteria will match if there is more than one message in datanommer
-with the same topic as the incoming message being handled.  Here, ``"{topic}"``
+with the same topic as the incoming message being handled.  Here, ``"%(topic)s"``
 is a `template variable`.  Template variables will have their values
 substituted before the expensive check is made against datanommer.
 
@@ -196,7 +194,7 @@ Here's a more interesting criteria definition::
         topics:
         - org.fedoraproject.prod.git.receive
         usernames:
-        - "{msg.commit.username}"
+        - "%(msg.commit.username)s"
       operation: count
       condition:
         greater than or equal to: 50
@@ -235,7 +233,7 @@ statement you provide into a callable and use that at runtime.  For example::
         topics:
         - org.fedoraproject.prod.git.receive
         usernames:
-        - "{msg.commit.username}"
+        - "%(msg.commit.username)s"
       operation: count
       condition:
         lambda: value != 0 and ((value & (value - 1)) == 0)
@@ -249,9 +247,8 @@ Specifying Recipients
 
 By default, if the trigger and criteria match, fedbadges will award badges
 to all the users returned by a call to ``fedmsg.meta.msg2usernames(msg)``.
-This *usually* corresponds with "what users are responsible" for this message
-which in turn *usually* corresponds to a notion of responsibility.  That
-is *usually* what we want to award badges for.
+This *usually* corresponds with "what users are responsible" for this message.
+That is *usually* what we want to award badges for.
 
 There are some instances for which that is not what we want.
 
@@ -266,7 +263,7 @@ remove inactive users from groups.  We don't want to inadvertently award
 that badge to the persons who *were removed*, only to those who *removed
 them*.
 
-To allow for this scenario, badges may optionally define a ``recipient_key``
+To allow for this scenario, badges may optionally define a ``recipient``
 in dotted notation that tells fedbadges where to find the username of the
 recipient in the originating message.  For instance, the following would
 handle the fas case we described above::
@@ -277,8 +274,8 @@ handle the fas case we described above::
     criteria:
       filter:
         topics:
-        - "{topic}"
+        - "%(topic)s"
       operation: count
       condition:
         greater than or equal to: 1
-    recipient_key: msg.agent.username
+    recipient: "%(msg.agent.username)s"

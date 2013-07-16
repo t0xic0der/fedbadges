@@ -19,7 +19,11 @@ class TestLambdaFactory(unittest.TestCase):
 class TestSubsitutions(unittest.TestCase):
     def test_basic(self):
         msg = dict(a=dict(b=dict(c=42)))
-        target = {"a_b_c": 42}
+        target = {
+            "a": dict(b=dict(c=42)),
+            "a.b": dict(c=42),
+            "a.b.c": 42,
+        }
         actual = construct_substitutions(msg)
         eq_(actual, target)
 
@@ -55,26 +59,54 @@ class TestSubsitutions(unittest.TestCase):
             "timestamp": 1359947640.986208
         }
         target = {
-            'i': 2,
-            'msg_agent': 'ralph',
-            'msg_created': False,
-            'msg_diff': '<p>alskdfj... the diff is actually here',
-            'msg_newly_mentioned_users': [],
-            'msg_post_comment_count': 0,
-            'msg_post_pk': 2,
-            'msg_post_post_type': 'question',
-            'msg_post_summary': 'alskdfjalskdjf alkjasdalskdjf ...',
-            'msg_post_text': 'alskdfjalskdjf alkjasdalskdjf ...',
-            'msg_post_vote_down_count': 0,
-            'msg_post_vote_up_count': 0,
-            'msg_thread_pk': 2,
-            'msg_thread_tagnames': ['town'],
-            'msg_thread_title': 'alskdjflaksjdf lakjsf a',
-            'msg_timestamp': 1359947640.0,
-            'msg_topmost_post_id': 2,
-            'timestamp': 1359947640.986208,
-            'topic': 'org.fedoraproject.dev.askbot.post.edit',
             'username': 'threebean',
+            'msg.post.text': 'alskdfjalskdjf alkjasdalskdjf ...',
+            'msg.thread.title': 'alskdjflaksjdf lakjsf a',
+            'msg.post.vote_down_count': 0,
+            'msg.post.post_type': 'question',
+            'msg.thread.pk': 2,
+            'msg.newly_mentioned_users': [],
+            'msg.diff': '<p>alskdfj... the diff is actually here',
+            'topic': 'org.fedoraproject.dev.askbot.post.edit',
+            'msg.agent': 'ralph',
+            'msg.post.comment_count': 0,
+            'msg.post': {
+                'vote_up_count': 0,
+
+                'text': 'alskdfjalskdjf alkjasdalskdjf ...',
+                'summary': 'alskdfjalskdjf alkjasdalskdjf ...',
+                'comment_count': 0,
+                'vote_down_count': 0,
+                'pk': 2,
+                'post_type': 'question'},
+            'msg.timestamp': 1359947640.0,
+            'timestamp': 1359947640.986208,
+            'msg.topmost_post_id': 2,
+            'i': 2,
+            'msg.post.pk': 2,
+            'msg.post.vote_up_count': 0,
+            'msg.post.summary': 'alskdfjalskdjf alkjasdalskdjf ...',
+            'msg.thread.tagnames': ['town'],
+            'msg.thread': {'tagnames': ['town'],
+                           'pk': 2,
+                           'title': 'alskdjflaksjdf lakjsf a'},
+            'msg': {'newly_mentioned_users': [],
+                    'thread': {'tagnames': ['town'],
+                               'pk': 2,
+                               'title': 'alskdjflaksjdf lakjsf a'},
+                    'created': False,
+                    'topmost_post_id': 2,
+                    'timestamp': 1359947640.0,
+                    'post': {'vote_up_count': 0,
+                             'text': 'alskdfjalskdjf alkjasdalskdjf ...',
+                             'summary': 'alskdfjalskdjf alkjasdalskdjf ...',
+                             'comment_count': 0,
+                             'vote_down_count': 0,
+                             'pk': 2,
+                             'post_type': 'question'},
+                    'diff': '<p>alskdfj... the diff is actually here',
+                    'agent': 'ralph'},
+            'msg.created': False,
         }
         actual = construct_substitutions(msg)
         eq_(actual, target)
@@ -83,10 +115,10 @@ class TestSubsitutions(unittest.TestCase):
 class TestFormatArgs(unittest.TestCase):
     def test_simple(self):
         subs = {
-            "foo_bar_baz": "value",
+            "foo.bar.baz": "value",
         }
         obj = {
-            "something should be": "{foo_bar_baz}",
+            "something should be": "%(foo.bar.baz)s",
         }
         target = {
             "something should be": "value",
@@ -96,11 +128,11 @@ class TestFormatArgs(unittest.TestCase):
 
     def test_list(self):
         subs = {
-            "foo_bar_baz": "value",
+            "foo.bar.baz": "value",
         }
         obj = {
             "something should be": [
-                "{foo_bar_baz}",
+                "%(foo.bar.baz)s",
                 "or this",
             ]
         }
@@ -113,19 +145,18 @@ class TestFormatArgs(unittest.TestCase):
         actual = format_args(obj, subs)
         eq_(actual, target)
 
-    # XXX - This would be cool.
-    #def test_numeric(self):
-    #    subs = {
-    #        "foo_bar_baz": 42,
-    #    }
-    #    obj = {
-    #        "something should be": "{foo_bar_baz}",
-    #    }
-    #    target = {
-    #        "something should be": 42,
-    #    }
-    #    actual = format_args(obj, subs)
-    #    eq_(actual, target)
+    def test_numeric(self):
+        subs = {
+            "foo.bar.baz": 42,
+        }
+        obj = {
+            "something should be": "%(foo.bar.baz)i",
+        }
+        target = {
+            "something should be": 42,
+        }
+        actual = format_args(obj, subs)
+        eq_(actual, target)
 
     def test_nested(self):
         subs = {
@@ -135,7 +166,7 @@ class TestFormatArgs(unittest.TestCase):
             "one": {
                 "thing": {
                     "leads": {
-                        "to": "{wat}",
+                        "to": "%(wat)s",
                         "most": "of the time",
                     }
                 }
@@ -150,6 +181,19 @@ class TestFormatArgs(unittest.TestCase):
                     }
                 }
             }
+        }
+        actual = format_args(obj, subs)
+        eq_(actual, target)
+
+    def test_nested_subs(self):
+        subs = {
+            'wat': dict(foo="bar")
+        }
+        obj = {
+            'envelope': "%(wat)s",
+        }
+        target = {
+            'envelope': dict(foo="bar"),
         }
         actual = format_args(obj, subs)
         eq_(actual, target)

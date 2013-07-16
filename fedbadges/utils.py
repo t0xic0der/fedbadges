@@ -9,6 +9,9 @@ import fedmsg.config
 import fedmsg.encoding
 import fedmsg.meta
 
+import logging
+log = logging.getLogger("moksha.hub")
+
 
 def construct_substitutions(msg):
     """ Convert a fedmsg message into a dict of substitutions. """
@@ -16,9 +19,12 @@ def construct_substitutions(msg):
     for key1 in msg:
         if isinstance(msg[key1], dict):
             subs.update(dict([
-                ('_'.join([key1, key2]), val2)
+                ('.'.join([key1, key2]), val2)
                 for key2, val2 in construct_substitutions(msg[key1]).items()
             ]))
+            subs[key1] = msg[key1]
+        elif isinstance(msg[key1], basestring):
+            subs[key1] = msg[key1].lower()
         else:
             subs[key1] = msg[key1]
     return subs
@@ -32,8 +38,10 @@ def format_args(obj, subs):
             obj[key] = format_args(obj[key], subs)
     elif isinstance(obj, list):
         return [format_args(item, subs) for item in obj]
+    elif isinstance(obj, basestring) and obj[2:-2] in subs:
+        obj = subs[obj[2:-2]]
     else:
-        obj = obj.format(**subs)
+        obj = obj % subs
 
     return obj
 
@@ -63,3 +71,19 @@ def recursive_lambda_factory(obj, arg, name='value'):
         pass
 
     return obj
+
+
+def graceful(default_return_value):
+    """ A decorator that gracefully handles exceptions. """
+
+    def decorate(method):
+        def inner(self, *args, **kwargs):
+            try:
+                return method(self, *args, **kwargs)
+            except Exception as e:
+                log.exception(e)
+                log.error("From method: %r self: %r args: %r kwargs: %r" % (
+                    method, self, args, kwargs))
+                return default_return_value
+        return inner
+    return decorate

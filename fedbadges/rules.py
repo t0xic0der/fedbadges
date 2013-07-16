@@ -24,6 +24,7 @@ from fedbadges.utils import (
     format_args,
     single_argument_lambda_factory,
     recursive_lambda_factory,
+    graceful,
 )
 
 operators = set([
@@ -34,6 +35,11 @@ operators = set([
 lambdas = set([
     "lambda",
 ])
+
+operator_lookup = {
+    "any": any,
+    "all": all,
+}
 
 fedmsg_config = fedmsg.config.load_config()
 fedmsg.meta.make_processors(**fedmsg_config)
@@ -52,6 +58,10 @@ class BadgeRule(object):
         'criteria',
     ])
 
+    possible = required.union([
+        'recipient',
+    ])
+
     banned_usernames = set([
         'bodhi',
         'oscar',
@@ -59,8 +69,15 @@ class BadgeRule(object):
         'koji',
     ])
 
-    def __init__(self, badge_dict, tahrir_database):
+    def __init__(self, badge_dict, tahrir_database, issuer_id):
         argued_fields = set(badge_dict.keys())
+
+        if not argued_fields.issubset(self.possible):
+            raise KeyError(
+                "%r are not possible fields.  Choose from %r" % (
+                    argued_fields.difference(self.possible),
+                    self.possible
+                ))
 
         if not self.required.issubset(argued_fields):
             raise ValueError(
@@ -82,11 +99,11 @@ class BadgeRule(object):
                 image=self._d['image_url'],
                 desc=self._d['description'],
                 criteria=self._d['discussion'],
-                issuer_id=self._d.get('issuer_id', "fedora-project"),
+                issuer_id=issuer_id,
             )
 
-        self.trigger = Trigger(self._d['trigger'])
-        self.criteria = Criteria(self._d['criteria'])
+        self.trigger = Trigger(self._d['trigger'], self)
+        self.criteria = Criteria(self._d['criteria'], self)
         self.recipient_key = self._d.get('recipient')
 
     def __getitem__(self, key):
@@ -106,9 +123,11 @@ class BadgeRule(object):
         # recipient_key, we can use that to extract the potential awardee.  If
         # that is not specified, we just use `msg2usernames`.
         if self.recipient_key:
-            key = self.recipient_key.replace('.', '_')
             subs = construct_substitutions(msg)
-            awardees = set([subs[key]])
+            obj = format_args(self.recipient_key, subs)
+            if isinstance(obj, (basestring, int, float)):
+                obj = [obj]
+            awardees = set(obj)
         else:
             usernames = fedmsg.meta.msg2usernames(msg)
             awardees = usernames.difference(self.banned_usernames)
@@ -144,7 +163,7 @@ class AbstractComparator(object):
     possible = required = set()
     children = None
 
-    def __init__(self, d):
+    def __init__(self, d, parent=None):
         argued_fields = set(d.keys())
         if not argued_fields.issubset(self.possible):
             raise KeyError(
@@ -161,6 +180,12 @@ class AbstractComparator(object):
                 ))
 
         self._d = d
+        self.parent = parent
+
+    def __repr__(self):
+        return "<%s: %r> which is a child of %s" % (
+            type(self).__name__, self._d, repr(self.parent)
+        )
 
     @abc.abstractmethod
     def matches(self, msg):
@@ -168,8 +193,8 @@ class AbstractComparator(object):
 
 
 class AbstractTopLevelComparator(AbstractComparator):
-    def __init__(self, d):
-        super(AbstractTopLevelComparator, self).__init__(d)
+    def __init__(self, *args, **kwargs):
+        super(AbstractTopLevelComparator, self).__init__(*args, **kwargs)
         cls = type(self)
 
         if len(self._d) > 1:
@@ -184,7 +209,7 @@ class AbstractTopLevelComparator(AbstractComparator):
             if not isinstance(self.expected_value, list):
                 raise TypeError("Operators only accept lists, not %r" %
                                 type(self.expected_value))
-            self.children = [cls(child) for child in self.expected_value]
+            self.children = [cls(child, self) for child in self.expected_value]
 
 
 class Trigger(AbstractTopLevelComparator):
@@ -193,13 +218,14 @@ class Trigger(AbstractTopLevelComparator):
         'category',
     ]).union(operators).union(lambdas)
 
+    @graceful(set())
     def matches(self, msg):
         # Check if we should just aggregate the results of our children.
         # Otherwise, we are a leaf-node doing a straightforward comparison.
         if self.children:
-            return __builtins__[self.attribute]([
+            return operator_lookup[self.attribute]((
                 child.matches(msg) for child in self.children
-            ])
+            ))
         elif self.attribute == 'lambda':
             return single_argument_lambda_factory(
                 expression=self.expected_value, argument=msg, name='msg')
@@ -207,7 +233,10 @@ class Trigger(AbstractTopLevelComparator):
             # TODO -- use fedmsg.meta.msg2processor(msg).__name__.lower()
             return msg['topic'].split('.')[3] == self.expected_value
         else:
-            return msg[self.attribute] == self.expected_value
+            if hasattr(msg[self.attribute], 'endswith'):
+                return msg[self.attribute].endswith(self.expected_value)
+            else:
+                return msg[self.attribute] == self.expected_value
 
 
 class Criteria(AbstractTopLevelComparator):
@@ -215,8 +244,8 @@ class Criteria(AbstractTopLevelComparator):
         'datanommer',
     ]).union(operators)
 
-    def __init__(self, d):
-        super(Criteria, self).__init__(d)
+    def __init__(self, *args, **kwargs):
+        super(Criteria, self).__init__(*args, **kwargs)
 
         if not self.children:
             # Then, by AbstractComparator rules, I am a leaf node.  Specialize!
@@ -230,11 +259,12 @@ class Criteria(AbstractTopLevelComparator):
         else:
             raise RuntimeError("This should be impossible to reach.")
 
+    @graceful(set())
     def matches(self, msg):
         if self.children:
-            return __builtins__[self.attribute]([
+            return operator_lookup[self.attribute]((
                 child.matches(msg) for child in self.children
-            ])
+            ))
         else:
             return self.specialization.matches(msg)
 
@@ -268,8 +298,8 @@ class DatanommerCriteria(AbstractSpecializedComparator):
         'lambda': single_argument_lambda_factory,
     }
 
-    def __init__(self, d):
-        super(DatanommerCriteria, self).__init__(d)
+    def __init__(self, *args, **kwargs):
+        super(DatanommerCriteria, self).__init__(*args, **kwargs)
         if len(self._d['condition']) > 1:
             conditions = self.condition_callbacks.keys()
             raise ValueError("No more than one condition allowed.  "
@@ -281,7 +311,7 @@ class DatanommerCriteria(AbstractSpecializedComparator):
         grep_arguments = set(argspec.args[1:]).difference(irrelevant)
 
         # Validate the filter
-        argued_filter_fields = set(d['filter'].keys())
+        argued_filter_fields = set(self._d['filter'].keys())
         if not argued_filter_fields.issubset(grep_arguments):
             raise KeyError(
                 "%r are not possible fields.  Choose from %r" % (
