@@ -13,6 +13,7 @@ import json
 import types
 import functools
 import inspect
+import transaction
 
 import fedmsg.config
 import fedmsg.meta
@@ -26,6 +27,17 @@ from fedbadges.utils import (
     recursive_lambda_factory,
     graceful,
 )
+
+import logging
+log = logging.getLogger('moksha.hub')
+
+
+nick2fas = None
+try:
+    from fedmsg_meta_fedora_infrastructure.fasshim import nick2fas
+except ImportError as e:
+    log.warn("Could not import nick2fas: %r" % e)
+
 
 operators = set([
     "all",
@@ -90,17 +102,25 @@ class BadgeRule(object):
 
         self.tahrir = tahrir_database
         if self.tahrir:
-            self.badge_id = self.tahrir.add_badge(
+            transaction.begin()
+            self.badge_id = self._d['badge_id'] = self.tahrir.add_badge(
                 name=self._d['name'],
                 image=self._d['image_url'],
                 desc=self._d['description'],
                 criteria=self._d['discussion'],
                 issuer_id=issuer_id,
             )
+            transaction.commit()
 
         self.trigger = Trigger(self._d['trigger'], self)
         self.criteria = Criteria(self._d['criteria'], self)
         self.recipient_key = self._d.get('recipient')
+        self.recipient_nick2fas = self._d.get('recipient_nick2fas')
+
+        # A sanity check before we kick things off.
+        if self.recipient_nick2fas and not nick2fas:
+            raise ImportError("recipient_nick2fas specified, but "
+                              "nick2fas is not available.")
 
     def __getitem__(self, key):
         return self._d[key]
@@ -121,9 +141,16 @@ class BadgeRule(object):
         if self.recipient_key:
             subs = construct_substitutions(msg)
             obj = format_args(self.recipient_key, subs)
+
             if isinstance(obj, (basestring, int, float)):
                 obj = [obj]
+
             awardees = set(obj)
+
+            if self.recipient_nick2fas:
+                awardees = set([
+                    nick2fas(nick, **fedmsg_config) for nick in awardees
+                ])
         else:
             usernames = fedmsg.meta.msg2usernames(msg)
             awardees = usernames.difference(self.banned_usernames)
@@ -139,6 +166,12 @@ class BadgeRule(object):
             awardees = set([user for user in awardees
                             if not self.tahrir.assertion_exists(
                                 self.badge_id, "%s@fedoraproject.org" % user
+                            )])
+
+            # Also, exclude any potential awardees who have opted out.
+            awardees = set([user for user in awardees
+                            if not self.tahrir.person_opted_out(
+                                "%s@fedoraproject.org" % user
                             )])
 
         # If no-one would get the badge at this point, then no reason to waste
