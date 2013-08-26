@@ -72,6 +72,7 @@ class BadgeRule(object):
 
     possible = required.union([
         'recipient',
+        'recipient_nick2fas',
     ])
 
     banned_usernames = set([
@@ -108,6 +109,7 @@ class BadgeRule(object):
                 image=self._d['image_url'],
                 desc=self._d['description'],
                 criteria=self._d['discussion'],
+                tags=','.join(self._d.get('tags', [])),
                 issuer_id=issuer_id,
             )
             transaction.commit()
@@ -154,6 +156,14 @@ class BadgeRule(object):
         else:
             usernames = fedmsg.meta.msg2usernames(msg)
             awardees = usernames.difference(self.banned_usernames)
+
+        # Strip anyone who is an IP address
+        awardees = set([
+            user for user in awardees if not (
+                user.startswith('192.168.') or
+                user.startswith('10.')
+            )
+        ])
 
         # If no-one would get the badge by default, then no reason to waste
         # time doing any further checks.  No need to query the Tahrir DB.
@@ -336,7 +346,7 @@ class DatanommerCriteria(AbstractSpecializedComparator):
 
         # Determine what arguments datanommer..grep accepts
         argspec = inspect.getargspec(datanommer.models.Message.grep)
-        irrelevant = set(['rows_per_page', 'page', 'defer'])
+        irrelevant = set(['defer'])
         grep_arguments = set(argspec.args[1:]).difference(irrelevant)
 
         # Validate the filter
@@ -364,10 +374,17 @@ class DatanommerCriteria(AbstractSpecializedComparator):
         kwargs = recursive_lambda_factory(kwargs, msg, name='msg')
         kwargs['defer'] = True
         total, pages, query = datanommer.models.Message.grep(**kwargs)
-        return query
+        return total, pages, query
 
     def matches(self, msg):
-        query = self.construct_query(msg)
-        operation = getattr(query, self._d['operation'])
-        result = operation()
+        total, pages, query = self.construct_query(msg)
+        if self._d['operation'] == 'count':
+            result = total
+        elif isinstance(self._d['operation'], dict):
+            expression = self._d['operation']['lambda']
+            result = single_argument_lambda_factory(
+                expression=expression, argument=query, name='query')
+        else:
+            operation = getattr(query, self._d['operation'])
+            result = operation()
         return self.condition(result)
