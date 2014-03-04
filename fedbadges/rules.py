@@ -21,11 +21,15 @@ import fedmsg.encoding
 import datanommer.models
 
 from fedbadges.utils import (
+    # These are all in-process utilities
     construct_substitutions,
     format_args,
     single_argument_lambda_factory,
     recursive_lambda_factory,
     graceful,
+
+    # This makes a network API call
+    get_pkgdb_packages_for,
 )
 
 import logging
@@ -39,18 +43,19 @@ except ImportError as e:
     log.warn("Could not import nick2fas: %r" % e)
 
 
-operators = set([
+operators = frozenset([
     "all",
     "any",
-    #"not",
+    "not",
 ])
-lambdas = set([
+lambdas = frozenset([
     "lambda",
 ])
 
 operator_lookup = {
     "any": any,
     "all": all,
+    "not": lambda x: all([not item for item in x])
 }
 
 fedmsg_config = fedmsg.config.load_config()
@@ -58,7 +63,7 @@ fedmsg.meta.make_processors(**fedmsg_config)
 
 
 class BadgeRule(object):
-    required = set([
+    required = frozenset([
         'name',
         'image_url',
         'description',
@@ -75,7 +80,7 @@ class BadgeRule(object):
         'recipient_nick2fas',
     ])
 
-    banned_usernames = set([
+    banned_usernames = frozenset([
         'bodhi',
         'oscar',
         'apache',
@@ -83,7 +88,7 @@ class BadgeRule(object):
     ])
 
     def __init__(self, badge_dict, tahrir_database, issuer_id):
-        argued_fields = set(badge_dict.keys())
+        argued_fields = frozenset(badge_dict.keys())
 
         if not argued_fields.issubset(self.possible):
             raise KeyError(
@@ -147,10 +152,10 @@ class BadgeRule(object):
             if isinstance(obj, (basestring, int, float)):
                 obj = [obj]
 
-            awardees = set(obj)
+            awardees = frozenset(obj)
 
             if self.recipient_nick2fas:
-                awardees = set([
+                awardees = frozenset([
                     nick2fas(nick, **fedmsg_config) for nick in awardees
                 ])
         else:
@@ -158,7 +163,7 @@ class BadgeRule(object):
             awardees = usernames.difference(self.banned_usernames)
 
         # Strip anyone who is an IP address
-        awardees = set([
+        awardees = frozenset([
             user for user in awardees if not (
                 user.startswith('192.168.') or
                 user.startswith('10.')
@@ -173,13 +178,13 @@ class BadgeRule(object):
         # Limit awardees to only those who do not already have this badge.
         # Do this only if we have an active connection to the Tahrir DB.
         if self.tahrir:
-            awardees = set([user for user in awardees
+            awardees = frozenset([user for user in awardees
                             if not self.tahrir.assertion_exists(
                                 self.badge_id, "%s@fedoraproject.org" % user
                             )])
 
             # Also, exclude any potential awardees who have opted out.
-            awardees = set([user for user in awardees
+            awardees = frozenset([user for user in awardees
                             if not self.tahrir.person_opted_out(
                                 "%s@fedoraproject.org" % user
                             )])
@@ -199,11 +204,11 @@ class BadgeRule(object):
 class AbstractComparator(object):
     """ Base class for shared behavior between trigger and criteria. """
     __metaclass__ = abc.ABCMeta
-    possible = required = set()
+    possible = required = frozenset()
     children = None
 
     def __init__(self, d, parent=None):
-        argued_fields = set(d.keys())
+        argued_fields = frozenset(d.keys())
         if not argued_fields.issubset(self.possible):
             raise KeyError(
                 "%r are not possible fields.  Choose from %r" % (
@@ -243,7 +248,13 @@ class AbstractTopLevelComparator(AbstractComparator):
         self.attribute = self._d.keys()[0]
         self.expected_value = self._d[self.attribute]
 
-        # Check if we should we recursively nest Trigger/Criteria?
+        ### Check if we should we recursively nest Trigger/Criteria?
+
+        # First, trick negation into thinking it is not a unary operator.
+        if self.attribute == 'not':
+            self.expected_value = [self.expected_value]
+
+        # Then, treat everything as if it accepts an arbitrary # of args.
         if self.attribute in operators:
             if not isinstance(self.expected_value, list):
                 raise TypeError("Operators only accept lists, not %r" %
@@ -252,7 +263,7 @@ class AbstractTopLevelComparator(AbstractComparator):
 
 
 class Trigger(AbstractTopLevelComparator):
-    possible = set([
+    possible = frozenset([
         'topic',
         'category',
     ]).union(operators).union(lambdas)
@@ -279,8 +290,9 @@ class Trigger(AbstractTopLevelComparator):
 
 
 class Criteria(AbstractTopLevelComparator):
-    possible = set([
+    possible = frozenset([
         'datanommer',
+        'pkgdb',
     ]).union(operators)
 
     def __init__(self, *args, **kwargs):
@@ -293,6 +305,8 @@ class Criteria(AbstractTopLevelComparator):
     def _specialize(self):
         if self.attribute == 'datanommer':
             self.specialization = DatanommerCriteria(self.expected_value)
+        elif self.attribute == 'pkgdb':
+            self.specialization = PkgdbCriteria(self.expected_value)
         # TODO -- expand this with other "backends" as necessary
         #elif self.attribute == 'fas'
         else:
@@ -312,8 +326,54 @@ class AbstractSpecializedComparator(AbstractComparator):
     pass
 
 
+class PkgdbCriteria(AbstractSpecializedComparator):
+    required = possible = frozenset([
+        'owns',
+    ])
+
+    def __init__(self, *args, **kwargs):
+        super(PkgdbCriteria, self).__init__(*args, **kwargs)
+
+        # Validate the owns dict
+        if not isinstance(self._d['owns'], dict):
+            raise ValueError("'owns' must be a dict")
+
+        owns_fields = frozenset(['user', 'packages'])
+        argued_fields = frozenset(self._d['owns'].keys())
+
+        if not argued_fields.issubset(owns_fields):
+            raise KeyError(
+                "%r are not possible fields.  Choose from %r" % (
+                    argued_fields.difference(owns_fields),
+                    owns_fields,
+                ))
+
+        if not owns_fields.issubset(argued_fields):
+            raise KeyError(
+                "%r are missing required fields." % (
+                    owns_fields.difference(argued_fields),
+                ))
+
+        if not isinstance(self._d['owns']['packages'], list):
+            raise ValueError("'packages' must be a list")
+
+    def matches(self, msg):
+        """ A pkgdb criteria check checks if a user owns some packages. """
+
+        subs = construct_substitutions(msg)
+        expectation = format_args(copy.copy(self._d['owns']), subs)
+        expectation = recursive_lambda_factory(expectation, msg, name='msg')
+
+        actual_packages = get_pkgdb_packages_for(
+            config=fedmsg_config,
+            user=expectation['user'],
+        )
+
+        return set(expectation['packages']).issubset(actual_packages)
+
+
 class DatanommerCriteria(AbstractSpecializedComparator):
-    required = possible = set([
+    required = possible = frozenset([
         'filter',
         'operation',
         'condition',
@@ -346,11 +406,11 @@ class DatanommerCriteria(AbstractSpecializedComparator):
 
         # Determine what arguments datanommer..grep accepts
         argspec = inspect.getargspec(datanommer.models.Message.grep)
-        irrelevant = set(['defer'])
-        grep_arguments = set(argspec.args[1:]).difference(irrelevant)
+        irrelevant = frozenset(['defer'])
+        grep_arguments = frozenset(argspec.args[1:]).difference(irrelevant)
 
         # Validate the filter
-        argued_filter_fields = set(self._d['filter'].keys())
+        argued_filter_fields = frozenset(self._d['filter'].keys())
         if not argued_filter_fields.issubset(grep_arguments):
             raise KeyError(
                 "%r are not possible fields.  Choose from %r" % (
@@ -368,7 +428,15 @@ class DatanommerCriteria(AbstractSpecializedComparator):
         self.condition = functools.partial(
             self.condition_callbacks[condition_key], condition_val)
 
-    def construct_query(self, msg):
+    def _construct_query(self, msg):
+        """ Construct a datanommer query for this message.
+
+        The "filter" section of this criteria object will be used.  It will
+        first be formatted with any substitutions present in the incoming
+        message.  This is used, for instance, to construct a query like "give
+        me all the messages bearing the same topic as the message that just
+        arrived".
+        """
         subs = construct_substitutions(msg)
         kwargs = format_args(copy.copy(self._d['filter']), subs)
         kwargs = recursive_lambda_factory(kwargs, msg, name='msg')
@@ -376,12 +444,34 @@ class DatanommerCriteria(AbstractSpecializedComparator):
         total, pages, query = datanommer.models.Message.grep(**kwargs)
         return total, pages, query
 
+    def _format_lambda_operation(self, msg):
+        """ Format the string representation of a lambda operation.
+
+        The lambda operation can be formatted here to include strings that
+        appear in the message being evaluated like
+        %(msg.comment.update_submitter)s.  Placeholders like that will have
+        their value substituted with whatever appears in the incoming message.
+        """
+        subs = construct_substitutions(msg)
+        operation = format_args(copy.copy(self._d['operation']), subs)
+        return operation['lambda']
+
     def matches(self, msg):
-        total, pages, query = self.construct_query(msg)
+        """ A datanommer criteria check is composed of three steps.
+
+        - A datanommer query is constructed by combining our yaml definition
+          with the incoming fedmsg message that triggered us.
+        - An operation in python is constructed by comining our yaml definition
+          with the incoming fedmsg message that triggered us.  That operation
+          is then executed against the datanommer query object.
+        - A condition, derived from our yaml definition, is evaluated with the
+          result of the operation from the previous step and is returned.
+        """
+        total, pages, query = self._construct_query(msg)
         if self._d['operation'] == 'count':
             result = total
         elif isinstance(self._d['operation'], dict):
-            expression = self._d['operation']['lambda']
+            expression = self._format_lambda_operation(msg)
             result = single_argument_lambda_factory(
                 expression=expression, argument=query, name='query')
         else:
