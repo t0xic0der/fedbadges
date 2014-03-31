@@ -15,6 +15,7 @@ _cache = make_region()
 
 # These are here just so they're available in globals()
 # for compiling lambda expressions
+import json
 import re
 import fedmsg.config
 import fedmsg.encoding
@@ -171,7 +172,7 @@ def _get_pkgdb2_packages_for(config, username):
 
             packages.add(pkgacl['packagelist']['package']['name'])
 
-    log.debug("done talking with pkgdb2 for now.")
+    log.debug("done talking with pkgdb2 for now. %r" % packages)
     return packages
 
 
@@ -190,5 +191,5 @@ def _get_pkgdb1_packages_for(config, username):
 
     data = req.json()
     packages = set([pkg['name'] for pkg in data['pkgs']])
-    log.debug("done talking with pkgdb1 for now.")
+    log.debug("done talking with pkgdb1 for now. %r" % packages)
     return packages
