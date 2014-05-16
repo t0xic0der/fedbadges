@@ -6,6 +6,7 @@ import logging
 log = logging.getLogger("moksha.hub")
 
 import fedmsg
+import fedora.client.fas2
 import requests
 
 # This is used for our queries against pkgdb
@@ -117,6 +118,16 @@ def notification_callback(topic, msg):
     )
 
 
+def user_exists_in_fas(config, user):
+    """ Return true if the user exists in FAS. """
+
+    fas2 = fedora.client.fas2.AccountSystem(
+        username=config['fas_credentials']['username'],
+        password=config['fas_credentials']['password'],
+    )
+    return bool(fas2.person_by_username(user))
+
+
 def get_pkgdb_packages_for(config, user):
     """ Retrieve the list of packages where the specified user some acl.
 
@@ -151,20 +162,27 @@ def _get_pkgdb2_packages_for(config, username):
         )
 
         if not req.status_code == 200:
-            return set()
+            return None
 
         return req.json()
 
+    packages = set()
+
     # We have to request the first page of data to figure out the total number
     data = _get_page(1)
+    if data is None:
+        return packages
+
     pages = data['page_total']
 
-    packages = set()
     for i in range(1, pages + 1):
 
         # Avoid requesting the data twice the first time around
         if i != 1:
-            data = _get_pages(i)
+            data = _get_page(i)
+
+        if data is None:
+            continue
 
         for pkgacl in data['acls']:
             if pkgacl['status'] != 'Approved':
