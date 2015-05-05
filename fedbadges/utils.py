@@ -22,11 +22,6 @@ import fedmsg.config
 import fedmsg.encoding
 import fedmsg.meta
 
-try:
-    from fedmsg_meta_fedora_infrastructure.fasshim import nick2fas
-except ImportError as e:
-    log.warn("Could not import nick2fas: %r" % e)
-
 
 def construct_substitutions(msg):
     """ Convert a fedmsg message into a dict of substitutions. """
@@ -121,7 +116,7 @@ def notification_callback(topic, msg):
 def user_exists_in_fas(config, user):
     """ Return true if the user exists in FAS. """
     default_url = 'https://admin.fedoraproject.org/accounts/'
-    fas2 = fedora.client.fas2.AccountSystem(
+    fas2 = fedora.client.AccountSystem(
         base_url=config['fas_credentials'].get('base_url', default_url),
         username=config['fas_credentials']['username'],
         password=config['fas_credentials']['password'],
